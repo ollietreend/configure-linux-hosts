@@ -1,0 +1,78 @@
+- name: Update system packages
+  hosts: all
+  become: true
+  become_user: root
+  tasks:
+    - name: Update & upgrade packages
+      ansible.builtin.apt: update_cache=yes upgrade=full
+
+    - name: Check if a reboot is needed
+      register: reboot_required_file
+      ansible.builtin.stat: path=/run/reboot-required get_checksum=no
+
+    - name: Reboot the box if kernel updated
+      when: reboot_required_file.stat.exists
+      ansible.builtin.reboot:
+        msg: "Reboot initiated by Ansible for kernel updates"
+
+- name: Setup user account
+  hosts: all
+  become: true
+  become_user: root
+  tasks:
+    - name: Get the user's full name
+      become: false
+      delegate_to: localhost
+      ansible.builtin.shell: |
+        set -o pipefail
+        dscacheutil -q user -a name $USER | fgrep gecos | sed -e 's/.*gecos: \(.*\)/\1/'
+      changed_when: false
+      register: user_full_name
+
+    - name: "Add user {{ lookup('env', 'USER') }}"
+      ansible.builtin.user:
+        name: "{{ lookup('env', 'USER') }}"
+        comment: "{{ user_full_name.stdout }}"
+        groups: sudo
+        shell: /bin/bash
+
+    - name: Allow passwordless sudo
+      community.general.sudoers:
+        name: passwordless-sudo
+        state: present
+        group: sudo
+        commands: ALL
+        nopassword: true
+
+    - name: Set authorized key for SSH login
+      ansible.posix.authorized_key:
+        user: "{{ lookup('env', 'USER') }}"
+        exclusive: true
+        key: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_rsa.pub') }}"
+
+- name: Configure SSH server
+  hosts: all
+  become: true
+  become_user: root
+  tasks:
+    - name: Disable root login
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: PermitRootLogin no
+      notify:
+        - Restart SSH server
+
+    - name: Disable password authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PasswordAuthentication'
+        line: PasswordAuthentication no
+      notify:
+        - Restart SSH server
+
+  handlers:
+    - name: Restart SSH server
+      ansible.builtin.service:
+        name: sshd
+        state: restarted

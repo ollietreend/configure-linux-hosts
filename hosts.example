@@ -1,0 +1,2 @@
+# Configure hosts for Ansible to manage
+example-hostname ansible_host=XXX.XXX.XXX.XXX
